@@ -22,6 +22,12 @@ tray legal=258
 tray a4=257
 
 # Known size names: letter legal a4 a3 a5 tabloid executive statement folio b5 a6
+# Envelopes: com10 env9 env11 env12 env14 monarch personal dl c5 c6 c65 envb5
+# e.g. to pull COM 10 envelopes from Tray 1:   tray com10=259
 
-# Alternative to an explicit map: let the printer pick the tray by size itself.
-# autotray
+# NOTE: choosing the paper source by page size is already ON by default, so an
+# explicit map like the one above is only needed for full control. To switch the
+# default behaviour instead:
+#
+#   no-autotray     turn it off (print on whatever the default source holds)
+#   autotray=form   also force the printer's "Automatically Select" bin

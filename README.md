@@ -120,17 +120,33 @@ tray legal=258
 PDFtoPrinterNative.exe doc.pdf /settings=mymap.cfg
 ```
 
-Or let the driver match automatically with `/autotray` (uses the printer's
-auto-by-size bin). Recognized size names: `letter legal a4 a3 a5 tabloid
-executive statement folio b5 a6`.
+### Choosing the paper source by page size (on by default)
 
-**This is off by default** (matching Acrobat's "Choose paper source by PDF
-size", which also ships off). The reason: when a requested size isn't loaded in
-any tray, the printer typically *pauses and prompts for a manual feed* — fine
-when you want size fidelity, but undesirable for unattended/batch printing,
-where the default behavior (print on whatever paper is loaded) never blocks. To
-make size&rarr;tray your local default, add `autotray` (or a `tray <size>=<bin>`
-map) to a `settings.cfg` next to the EXE.
+**This happens automatically — no options needed.** Each page's paper size is
+sent to the printer, which pulls from whichever tray holds that paper, so a
+COM 10 envelope comes from the envelope tray and a letter page from the letter
+tray. It is the same behaviour as Acrobat's "Choose paper source by PDF page
+size" and as the original AutoIt PDFtoPrinter, which shipped with that option
+enabled.
+
+Recognized size names: `letter legal a4 a3 a5 tabloid executive statement folio
+b5 a6`, and the envelopes `com10 env9 env11 env12 env14 monarch personal dl c5
+c6 c65 envb5`. A page matching none of those is sent as a custom size, so a
+tray configured for it can still be matched.
+
+Two ways to change it:
+
+- **`/no-autotray`** turns it off entirely: pages print on whatever paper the
+  printer's own default source provides. Useful for unattended printing where a
+  size that isn't loaded would otherwise make the printer pause and prompt for
+  a manual feed.
+- **`/autotray=form`** additionally forces the printer's "Automatically Select"
+  bin (`DMBIN_FORMSOURCE`). Some drivers want this; others ignore it — an HP
+  LaserJet Pro MFP 4101 ignores that bin for envelopes (which is why it is not
+  the default), while an older HP LaserJet P3015 honours it.
+
+Both work in a settings file as `no-autotray` or `autotray=form`. Preview any
+job's tray decisions without printing by adding `/autotray /mock`.
 
 > Tip: always preview with `/mock` first — it shows each page's chosen tray
 > without printing.

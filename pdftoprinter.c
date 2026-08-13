@@ -36,6 +36,17 @@
 #define EXIT_NO_PDF_MATCH   8
 #define EXIT_PRINT_ERRORS   9
 
+/* ----- Did we print anything to the console? -----------------------------
+   restore_prompt() (see below) only nudges cmd when we actually wrote
+   something. With no output there is nothing covering the prompt cmd already
+   drew, and an extra Enter would simply produce a second prompt.
+   A function-like macro is not re-expanded inside its own definition, so these
+   still call the real CRT functions. */
+static int g_wroteOutput = 0;
+#define wprintf(...)     (g_wroteOutput = 1, wprintf(__VA_ARGS__))
+#define fwprintf(f, ...) (((f) == stdout || (f) == stderr) ? (g_wroteOutput = 1) : 0, \
+                          fwprintf(f, __VA_ARGS__))
+
 /* ----- Scaling model ----------------------------------------------------- */
 enum { SCALE_FLAGS = 0, SCALE_PERCENT = 1 };
 
@@ -62,6 +73,8 @@ typedef struct {
     int      listtrays;              /* /listtrays diagnostic, then exit     */
     int      autotray;               /* /autotray: pick bin by page size     */
     int      autoBin;                /* detected by-size bin (15 or 7)       */
+    int      autoSizeOnly;           /* /autotray=size: set size, not source */
+    int      trayExplicit;           /* user named a tray option -> be verbose */
     struct { wchar_t name[32]; int bin; } traymap[32];  /* tray <size>=<bin> */
     int      traymapCount;
 } options;
@@ -328,12 +341,29 @@ static void apply_arg(options *o, const wchar_t *arg, int fromConfig,
                     wcscpy(o->traymap[o->traymapCount].name, nm);
                     o->traymap[o->traymapCount].bin = bin;
                     o->traymapCount++;
+                    o->trayExplicit = 1;
                 }
             }
             return;
         }
     }
-    if (optmatch(arg, L"autotray"))  { o->autotray = 1; return; }
+    if ((rest = optprefix(arg, L"autotray="))) {
+        /* DEFAULT (/autotray or /autotray=size): send the page's paper size and
+           leave the paper SOURCE untouched, letting the driver's own logic pick
+           the tray -- what Acrobat appears to do, and what modern drivers want.
+           /autotray=form: the older behaviour, forcing the printer's
+           "Automatically Select" bin (DMBIN_FORMSOURCE). Needed by some drivers
+           and harmless on others; conversely the HP LaserJet Pro MFP 4101
+           IGNORES that bin for envelopes, which is why size-only is the default. */
+        o->autotray = 1;
+        o->autoSizeOnly = !(_wcsicmp(rest, L"form") == 0 || _wcsicmp(rest, L"bin") == 0);
+        o->trayExplicit = 1;
+        return;
+    }
+    if (optmatch(arg, L"autotray"))  { o->autotray = 1; o->autoSizeOnly = 1; o->trayExplicit = 1; return; }
+    if (optmatch(arg, L"no-autotray") || optmatch(arg, L"noautotray")) {
+        o->autotray = 0; o->autoSizeOnly = 0; o->trayExplicit = 1; return;
+    }
     if (optprefix(arg, L"tray"))     return;           /* any other tray* -> ignore */
 
     if (optmatch(arg, L"listtrays")) { o->listtrays = 1; return; }
@@ -475,8 +505,23 @@ static const PaperSize g_papers[] = {
     { L"executive", DMPAPER_EXECUTIVE,  522.0,  756.0 },
     { L"statement", DMPAPER_STATEMENT,  396.0,  612.0 },
     { L"folio",     DMPAPER_FOLIO,      612.0,  936.0 },
-    { L"b5",        DMPAPER_B5,         516.0,  729.0 },
-    { L"a6",        DMPAPER_A6,         297.0,  420.0 },
+    { L"b5",        DMPAPER_B5,          516.0,  729.0 },
+    { L"a6",        DMPAPER_A6,          297.0,  420.0 },
+    /* Envelopes -- needed so "choose paper source by PDF size" can find an
+       envelope tray. Without these an envelope PDF stayed at the DEVMODE's
+       default size (Letter) and printed from the letter tray. */
+    { L"com10",     DMPAPER_ENV_10,      297.0,  684.0 },  /* 4.125 x 9.5 in  */
+    { L"env9",      DMPAPER_ENV_9,       279.0,  639.0 },  /* 3.875 x 8.875   */
+    { L"env11",     DMPAPER_ENV_11,      324.0,  747.0 },  /* 4.5   x 10.375  */
+    { L"env12",     DMPAPER_ENV_12,      342.0,  792.0 },  /* 4.75  x 11      */
+    { L"env14",     DMPAPER_ENV_14,      360.0,  828.0 },  /* 5     x 11.5    */
+    { L"monarch",   DMPAPER_ENV_MONARCH, 279.0,  540.0 },  /* 3.875 x 7.5     */
+    { L"personal",  DMPAPER_ENV_PERSONAL,261.0,  468.0 },  /* 3.625 x 6.5     */
+    { L"dl",        DMPAPER_ENV_DL,      312.0,  624.0 },  /* 110 x 220 mm    */
+    { L"c5",        DMPAPER_ENV_C5,      459.0,  649.0 },  /* 162 x 229 mm    */
+    { L"c6",        DMPAPER_ENV_C6,      323.0,  459.0 },  /* 114 x 162 mm    */
+    { L"c65",       DMPAPER_ENV_C65,     323.0,  649.0 },  /* 114 x 229 mm    */
+    { L"envb5",     DMPAPER_ENV_B5,      499.0,  709.0 },  /* 176 x 250 mm    */
 };
 static const int g_paperCount = (int)(sizeof(g_papers) / sizeof(g_papers[0]));
 
@@ -559,14 +604,34 @@ static int print_page(HDC hdc, DEVMODEW *dm, FPDF_DOCUMENT doc, int pageIndex, c
        then ResetDC so the printable area below reflects the new paper. */
     if (tray_by_size_active(o) && dm) {
         int pidx; int bin = choose_bin_for_page(o, wpt, hpt, &pidx);
-        if (!o->silent)
+        /* Only chatter when the user actually asked about trays -- this is on
+           by default now, and a normal print run should stay quiet. */
+        if (!o->silent && o->trayExplicit)
             wprintf(L"  page %d: %s %.0fx%.0f pt -> /tray=%d\n", pageIndex + 1,
                     pidx >= 0 ? g_papers[pidx].name : L"(custom)", wpt, hpt, bin);
-        if (bin) {
-            dm->dmDefaultSource = (short)bin; dm->dmFields |= DM_DEFAULTSOURCE;
-            if (pidx >= 0) { dm->dmPaperSize = (short)g_papers[pidx].dmpaper; dm->dmFields |= DM_PAPERSIZE; }
-            ResetDCW(hdc, dm);
+        /* ALWAYS tell the driver this page's paper size -- even for a size not
+           in the table. Leaving it unset means the DEVMODE keeps its default
+           (usually Letter), so a "select by size" bin picks the letter tray.
+           A custom size still beats a wrong one, and lets the driver match a
+           tray configured for it. */
+        if (pidx >= 0) {
+            dm->dmPaperSize = (short)g_papers[pidx].dmpaper;
+            dm->dmFields |= DM_PAPERSIZE;
+            dm->dmFields &= ~(DM_PAPERWIDTH | DM_PAPERLENGTH);
+        } else {
+            /* dmPaperWidth/Length are in TENTHS OF A MILLIMETRE, given for the
+               sheet in portrait terms (short edge = width). */
+            double mn = wpt < hpt ? wpt : hpt, mx = wpt < hpt ? hpt : wpt;
+            dm->dmPaperSize   = DMPAPER_USER;
+            dm->dmPaperWidth  = (short)(mn * 254.0 / 72.0 + 0.5);
+            dm->dmPaperLength = (short)(mx * 254.0 / 72.0 + 0.5);
+            dm->dmFields |= DM_PAPERSIZE | DM_PAPERWIDTH | DM_PAPERLENGTH;
         }
+        /* Source only when we actually resolved a bin; otherwise leave the
+           driver's own source alone -- with the size set correctly, its normal
+           auto-select already finds the right tray. */
+        if (bin) { dm->dmDefaultSource = (short)bin; dm->dmFields |= DM_DEFAULTSOURCE; }
+        ResetDCW(hdc, dm);
     }
 
     int dpiX = GetDeviceCaps(hdc, LOGPIXELSX), dpiY = GetDeviceCaps(hdc, LOGPIXELSY);
@@ -805,16 +870,20 @@ L"               [copies=#] [focus=\"title\"] [/r] [/R[#]] [/p:password]\n"
 L"               [/csv] [/mock] [/s]\n"
 L"               [/scale=#|fit] [/shrink-to-fit] [/expand-to-fit]\n"
 L"               [/auto-rotate] [/auto-center] [/portrait] [/landscape]\n"
-L"               [/duplex|/duplex=short] [/simplex] [/tray=#] [/autotray]\n"
+L"               [/duplex|/duplex=short] [/simplex] [/tray=#] [/no-autotray]\n"
 L"               [/outfile=path] [/settings=profile.cfg] [/listtrays]\n\n"
 L"Wildcards (* ?) and relative paths are OK. Multiple named files override a\n"
 L"wildcard. Default printer is used unless a printer name is given.\n\n"
 L"Page ranges: 3 | 2-4,6,8-9 | 8- | z-1 (reverse) | z-1:odd|even | r5-r2.\n\n"
 L"Scaling: /scale=# is an explicit percent and wins over the fit flags.\n"
 L"  /shrink-to-fit + /expand-to-fit together = fit either way.\n\n"
-L"Trays: /tray=# selects a paper bin. /autotray, or a per-printer 'tray <size>=#'\n"
-L"  config map, chooses the bin from each page's paper size. Run /listtrays\n"
-L"  (optionally with a printer name) to list a printer's bin numbers and names.\n\n"
+L"Paper source by PDF page size is ON by default: each page's size is sent to\n"
+L"  the printer, which picks the matching tray (envelopes included). Turn it\n"
+L"  off with /no-autotray. If a printer ignores it, /autotray=form also forces\n"
+L"  the printer's 'Automatically Select' bin. /tray=# picks one bin for the\n"
+L"  whole job, and a per-printer 'tray <size>=#' config map assigns bins by\n"
+L"  size. Run /listtrays (optionally with a printer name) to list a printer's\n"
+L"  bin numbers and names.\n\n"
 L"settings.cfg next to the EXE is auto-loaded; /settings=file selects another.\n"
 L"Config lines are options minus the leading slash; # or ; comments.\n");
 }
@@ -941,8 +1010,17 @@ static int gui_select_printer(wchar_t *out, int cch) {
     SendMessageW(hOK,       WM_SETFONT, (WPARAM)font, TRUE);
     SendMessageW(hCancel,   WM_SETFONT, (WPARAM)font, TRUE);
 
-    for (int i = 0; i < g_guiCount; i++)
-        SendMessageW(g_guiList, LB_ADDSTRING, 0, (LPARAM)g_guiNames[i]);
+    for (int i = 0; i < g_guiCount; i++) {
+        if (i == g_guiDefault) {
+            /* Show "(default)" in the list; the value returned on OK is still
+               the plain name from g_guiNames[i]. */
+            wchar_t disp[320];
+            _snwprintf(disp, 320, L"%s (default)", g_guiNames[i]);
+            SendMessageW(g_guiList, LB_ADDSTRING, 0, (LPARAM)disp);
+        } else {
+            SendMessageW(g_guiList, LB_ADDSTRING, 0, (LPARAM)g_guiNames[i]);
+        }
+    }
     SendMessageW(g_guiList, LB_SETCURSEL, (g_guiDefault >= 0 ? g_guiDefault : 0), 0);
 
     ShowWindow(hwnd, SW_SHOW);
@@ -1041,6 +1119,33 @@ static int exe_name_has(const wchar_t *needle) {
     return wcsstr(base, needle) != NULL;
 }
 
+/* ---- Restore the shell prompt on exit -----------------------------------
+   This is a GUI-subsystem exe (so no console flashes on a double-click), and
+   cmd does not wait for a GUI app at an interactive prompt: it prints the next
+   prompt immediately, then our output lands underneath it, leaving the cursor
+   after our text with no prompt in sight. The shell is idle, but it LOOKS hung.
+   Pushing one Enter into the console input queue as we exit makes cmd draw a
+   fresh prompt. Only done when we attached to a real console and output was
+   not redirected. (Batch files are unaffected: there cmd does wait.) */
+static int g_restorePrompt = 0;
+static void restore_prompt(void) {
+    INPUT_RECORD rec[2]; DWORD written = 0, mode = 0;
+    HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
+    if (!g_restorePrompt || !g_wroteOutput) return;   /* nothing covered the prompt */
+    if (!hIn || hIn == INVALID_HANDLE_VALUE) return;
+    if (!GetConsoleMode(hIn, &mode)) return;          /* not a console */
+    ZeroMemory(rec, sizeof(rec));
+    rec[0].EventType                        = KEY_EVENT;
+    rec[0].Event.KeyEvent.bKeyDown          = TRUE;
+    rec[0].Event.KeyEvent.wRepeatCount      = 1;
+    rec[0].Event.KeyEvent.wVirtualKeyCode   = VK_RETURN;
+    rec[0].Event.KeyEvent.wVirtualScanCode  = (WORD)MapVirtualKeyW(VK_RETURN, MAPVK_VK_TO_VSC);
+    rec[0].Event.KeyEvent.uChar.UnicodeChar = L'\r';
+    rec[1] = rec[0];
+    rec[1].Event.KeyEvent.bKeyDown = FALSE;
+    WriteConsoleInputW(hIn, rec, 2, &written);
+}
+
 /* GUI help text — flowing paragraphs, blank-line breaks only (no hard wraps). */
 static const wchar_t *g_guiHelp =
 L"PDFtoPrinter prints PDF files to a Windows printer from the command line.\r\n\r\n"
@@ -1060,10 +1165,13 @@ L"fits either way. /auto-rotate turns landscape pages to match the paper; /auto-
 L"centers a page smaller than the sheet; /portrait and /landscape force an orientation.\r\n\r\n"
 L"Two-sided: /duplex prints both sides on the long edge, /duplex=short uses the short edge, "
 L"/simplex forces single-sided.\r\n\r\n"
-L"Paper source: /tray=# selects a paper bin. /autotray, or a per-printer settings file with "
-L"\"tray <size>=#\" lines (for example tray legal=258), chooses the bin automatically from each "
-L"page's paper size. Run /listtrays (optionally with a printer name) to see the bin numbers and "
-L"names for a printer.\r\n\r\n"
+L"Paper source: choosing the paper source by PDF page size is ON by default -- each page's "
+L"size is sent to the printer, which then pulls from the tray holding that paper, envelopes "
+L"included. Turn it off with /no-autotray. If a printer ignores it, /autotray=form also forces "
+L"that printer's \"Automatically Select\" bin. /tray=# selects a single paper bin for the whole "
+L"job, and a per-printer settings file with \"tray <size>=#\" lines (for example tray "
+L"legal=258) assigns bins by page size. Run /listtrays (optionally with a printer name) to see "
+L"the bin numbers and names for a printer.\r\n\r\n"
 L"Other options: /r recurses the current folder; /R# recurses # levels; /p:password opens an "
 L"encrypted PDF; /csv writes a list of files printed; /mock lists files without printing; "
 L"/s runs silently; /outfile=path prints to a file.\r\n\r\n"
@@ -1085,6 +1193,8 @@ int wmain(int argc, wchar_t **argv) {
         freopen_s(&fdummy, "CONOUT$", "w", stdout);
         freopen_s(&fdummy, "CONOUT$", "w", stderr);
         freopen_s(&fdummy, "CONIN$",  "r", stdin);
+        g_restorePrompt = 1;            /* redraw the prompt as we exit */
+        atexit(restore_prompt);
     }
     int commandline = attached || redirected;
 
@@ -1102,6 +1212,13 @@ int wmain(int argc, wchar_t **argv) {
     o.recur = 1;
     o.scaleMode = SCALE_FLAGS;
     o.scalePct = 100.0;
+    /* "Choose paper source by PDF page size" is ON by default -- matching the
+       PDF-XChange Settings.dat that shipped with the original AutoIt
+       PDFtoPrinter, so upgrading users keep the behaviour they have had for
+       years. Size-only (the paper SOURCE is left to the driver); turn it off
+       with /no-autotray, or force the old bin with /autotray=form. */
+    o.autotray = 1;
+    o.autoSizeOnly = 1;
 
     WideVec fileArgs; ZeroMemory(&fileArgs, sizeof(fileArgs));
 
@@ -1155,8 +1272,11 @@ int wmain(int argc, wchar_t **argv) {
         EnumPrintersW(PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS, NULL, 4,
                       pbuf, needed, &needed, &count);
         PRINTER_INFO_4W *pi = (PRINTER_INFO_4W*)pbuf;
+        wchar_t defp[512]; DWORD dnp = 512; defp[0] = 0; GetDefaultPrinterW(defp, &dnp);
         wprintf(L"Select a printer:\n");
-        for (DWORD i = 0; i < count; i++) wprintf(L"  %lu) %s\n", i + 1, pi[i].pPrinterName);
+        for (DWORD i = 0; i < count; i++)
+            wprintf(L"  %lu) %s%s\n", i + 1, pi[i].pPrinterName,
+                    (defp[0] && _wcsicmp(defp, pi[i].pPrinterName) == 0) ? L" (default)" : L"");
         wprintf(L"> "); fflush(stdout);
         wchar_t line[32]; int sel = 0;
         if (fgetws(line, 32, stdin)) sel = _wtoi(line);
@@ -1184,7 +1304,7 @@ int wmain(int argc, wchar_t **argv) {
     if (files.n == 0) { msg(&o, L"No PDF file matched."); return EXIT_NO_PDF_MATCH; }
 
     /* ----- size->tray: detect the printer's auto-by-size bin if asked --- */
-    if (o.autotray) {
+    if (o.autotray && !o.autoSizeOnly) {
         o.autoBin = detect_auto_bin(printerName);
         if (!o.autoBin)
             fwprintf(stderr, L"Warning: \"%s\" reports no auto-by-size bin; /autotray will do nothing.\n", printerName);
