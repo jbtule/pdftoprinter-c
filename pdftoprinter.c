@@ -25,6 +25,14 @@
 
 #include "fpdfview.h"
 
+/* Print-mode values for FPDF_SetPrintMode (defined in fpdf_edit.h, which this
+   file does not otherwise need). Values match PDFium's WindowsPrintMode. */
+#ifndef FPDF_PRINTMODE_EMF
+#define FPDF_PRINTMODE_EMF                            0
+#define FPDF_PRINTMODE_POSTSCRIPT3_PASSTHROUGH        5
+#define FPDF_PRINTMODE_POSTSCRIPT3_TYPE42_PASSTHROUGH 8
+#endif
+
 /* ----- Exit codes (mirror the AutoIt version where meaningful) ----------- */
 #define EXIT_OK             0
 #define EXIT_NO_ARGS        2
@@ -46,6 +54,15 @@ static int g_wroteOutput = 0;
 #define wprintf(...)     (g_wroteOutput = 1, wprintf(__VA_ARGS__))
 #define fwprintf(f, ...) (((f) == stdout || (f) == stderr) ? (g_wroteOutput = 1) : 0, \
                           fwprintf(f, __VA_ARGS__))
+
+/* ----- Render model (/render=bitmap|gdi|ps) ------------------------------ */
+/* bitmap: original behaviour - full-page raster via StretchDIBits.
+   gdi:    PDFium draws straight to the printer DC; text/paths stay vector.
+   ps:     PDFium emits PostScript level 3 inside the driver's own job, so the
+           driver still writes the job header (finishing etc.). Needs a
+           PostScript driver; falls back to gdi if the driver lacks support.
+   ps42:   as ps, but embeds TrueType fonts as Type 42 (sharper text). */
+enum { RENDER_BITMAP = 0, RENDER_GDI = 1, RENDER_PS = 2, RENDER_PS42 = 3 };
 
 /* ----- Scaling model ----------------------------------------------------- */
 enum { SCALE_FLAGS = 0, SCALE_PERCENT = 1 };
@@ -77,6 +94,7 @@ typedef struct {
     int      trayExplicit;           /* user named a tray option -> be verbose */
     struct { wchar_t name[32]; int bin; } traymap[32];  /* tray <size>=<bin> */
     int      traymapCount;
+    int      renderMode;             /* RENDER_BITMAP (default) | GDI | PS   */
 } options;
 
 /* ----- Simple growable vector of wide strings ---------------------------- */
@@ -367,6 +385,13 @@ static void apply_arg(options *o, const wchar_t *arg, int fromConfig,
     if (optprefix(arg, L"tray"))     return;           /* any other tray* -> ignore */
 
     if (optmatch(arg, L"listtrays")) { o->listtrays = 1; return; }
+    if ((rest = optprefix(arg, L"render="))) {
+        if      (_wcsicmp(rest, L"gdi") == 0 || _wcsicmp(rest, L"vector") == 0) o->renderMode = RENDER_GDI;
+        else if (_wcsicmp(rest, L"ps")  == 0 || _wcsicmp(rest, L"postscript") == 0) o->renderMode = RENDER_PS;
+        else if (_wcsicmp(rest, L"ps42") == 0) o->renderMode = RENDER_PS42;
+        else o->renderMode = RENDER_BITMAP;   /* "bitmap" or anything unknown */
+        return;
+    }
 
     if (optmatch(arg, L"shrink-to-fit")) { o->shrink = 1; return; }
     if (optmatch(arg, L"expand-to-fit")) { o->expand = 1; return; }
@@ -663,6 +688,21 @@ static int print_page(HDC hdc, DEVMODEW *dm, FPDF_DOCUMENT doc, int pageIndex, c
     int x = o->autocenter ? (prW - tw) / 2 : 0;
     int y = o->autocenter ? (prH - th) / 2 : 0;
 
+    if (o->renderMode != RENDER_BITMAP) {
+        /* Vector path: PDFium renders directly into the printer DC (GDI), or
+           as PostScript passthrough when FPDF_SetPrintMode chose a PS mode. */
+        FPDF_PAGE vpage = FPDF_LoadPage(doc, pageIndex);
+        if (!vpage) return 0;
+        int vok = 1;
+        if (StartPage(hdc) <= 0) vok = 0;
+        if (vok) {
+            FPDF_RenderPage(hdc, vpage, x, y, tw, th, rotate, FPDF_PRINTING | FPDF_ANNOT);
+            if (EndPage(hdc) <= 0) vok = 0;
+        }
+        FPDF_ClosePage(vpage);
+        return vok;
+    }
+
     size_t stride = (size_t)tw * 4;
     unsigned char *buf = (unsigned char*)malloc(stride * th);
     if (!buf) return 0;
@@ -871,7 +911,12 @@ L"               [/csv] [/mock] [/s]\n"
 L"               [/scale=#|fit] [/shrink-to-fit] [/expand-to-fit]\n"
 L"               [/auto-rotate] [/auto-center] [/portrait] [/landscape]\n"
 L"               [/duplex|/duplex=short] [/simplex] [/tray=#] [/no-autotray]\n"
-L"               [/outfile=path] [/settings=profile.cfg] [/listtrays]\n\n"
+L"               [/outfile=path] [/settings=profile.cfg] [/listtrays]\n"
+L"               [/render=bitmap|gdi|ps|ps42]\n\n"
+L"Rendering: bitmap (default) sends a full-page raster. gdi keeps text and\n"
+L"  line art as vectors. ps sends PostScript inside the driver's job (PS\n"
+L"  drivers only; falls back to gdi); ps42 also embeds TrueType fonts as\n"
+L"  Type 42. Queue defaults apply in all modes.\n\n"
 L"Wildcards (* ?) and relative paths are OK. Multiple named files override a\n"
 L"wildcard. Default printer is used unless a printer name is given.\n\n"
 L"Page ranges: 3 | 2-4,6,8-9 | 8- | z-1 (reverse) | z-1:odd|even | r5-r2.\n\n"
@@ -1319,6 +1364,22 @@ int wmain(int argc, wchar_t **argv) {
             fwprintf(stderr, L"Could not open printer \"%s\".\n", printerName);
             FPDF_DestroyLibrary();
             return EXIT_PRINTER_INVALID;
+        }
+        if (o.renderMode == RENDER_PS || o.renderMode == RENDER_PS42) {
+            /* PostScript needs a PS driver that accepts the PASSTHROUGH escape.
+               If it doesn't (PCL, XPS/v4, IPP class driver), fall back to gdi. */
+            int esc = PASSTHROUGH;
+            if (ExtEscape(hdc, QUERYESCSUPPORT, sizeof(esc), (LPCSTR)&esc, 0, NULL) > 0) {
+                FPDF_SetPrintMode(o.renderMode == RENDER_PS42
+                                  ? FPDF_PRINTMODE_POSTSCRIPT3_TYPE42_PASSTHROUGH
+                                  : FPDF_PRINTMODE_POSTSCRIPT3_PASSTHROUGH);
+            } else {
+                fwprintf(stderr, L"Warning: \"%s\" does not accept PostScript; using /render=gdi.\n", printerName);
+                o.renderMode = RENDER_GDI;
+                FPDF_SetPrintMode(FPDF_PRINTMODE_EMF);
+            }
+        } else if (o.renderMode == RENDER_GDI) {
+            FPDF_SetPrintMode(FPDF_PRINTMODE_EMF);
         }
     }
 
