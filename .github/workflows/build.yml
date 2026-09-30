@@ -4,7 +4,8 @@ name: Windows build
 # upload it (with pdfium.dll) as an artifact to download and test on a Windows
 # machine; push and PR builds only check that it compiles. The version comes
 # from MinVer (the latest vX.Y.Z tag plus commit height) and is stamped into the
-# exe's version resource and the artifact name.
+# exe's version resource and the artifact name. PR and /run builds take it from
+# the PR's own branch and add +pr.N, e.g. 1.1.1-alpha.0.3+pr.1.
 #
 # Runs on:
 #   - pushes to build/main, and pull requests (drafts included)
@@ -73,9 +74,23 @@ jobs:
       - name: Version (MinVer)
         id: minver
         shell: pwsh
+        env:
+          PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
         run: |
           dotnet tool install --global minver-cli --version 8.0.0
-          $v = (minver --tag-prefix v --verbosity warn).Trim()
+          # PR builds compile the merge commit, but version from the PR's own
+          # branch so each push bumps the height, then tag it with the PR number.
+          $prHead = git rev-parse --verify --quiet 'HEAD^2'
+          if ($env:PR_NUMBER -and $prHead) {
+            $dir = Join-Path $env:RUNNER_TEMP prhead
+            git worktree add --quiet --detach $dir $prHead
+            Push-Location $dir
+            $v = (minver --tag-prefix v --verbosity warn).Trim() + "+pr.$env:PR_NUMBER"
+            Pop-Location
+            git worktree remove --force $dir
+          } else {
+            $v = (minver --tag-prefix v --verbosity warn).Trim()
+          }
           $m = [regex]::Match($v, '^(\d+)\.(\d+)\.(\d+)')
           "version=$v" >> $env:GITHUB_OUTPUT
           "VER_STRING=$v"               >> $env:GITHUB_ENV
