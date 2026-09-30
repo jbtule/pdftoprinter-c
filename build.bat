@@ -18,8 +18,9 @@ REM ---- fetch PDFium (pinned) -------------------------------------------------
 REM To upgrade: pick a release from github.com/bblanchon/pdfium-binaries/releases,
 REM set PDFIUM_BUILD to its chromium/NNNN number and PDFIUM_SHA256 to the hash of
 REM its pdfium-win-x64.tgz. A changed pin re-downloads on the next build.
-set "PDFIUM_BUILD=8076"
-set "PDFIUM_SHA256=808d36da9bc5a3104315fb307c80998121f565ee53953633bf33e80d7429e5ac"
+REM 7906 is the pdfium.dll shipped in the upstream First_release and v1.1.
+set "PDFIUM_BUILD=7906"
+set "PDFIUM_SHA256=a60740ba8e9bddefa5a53113e25f62364995383d2eed032bcfc60f17209afe47"
 
 set "PDFIUM_HAVE="
 if exist "pdfium\.pinned" set /p PDFIUM_HAVE=<"pdfium\.pinned"
