@@ -47,9 +47,9 @@ change `PDFIUM_BUILD` and `PDFIUM_SHA256` at the top of `build.bat`. The output 
 Local builds are versioned `0.0.0-dev`. The GitHub Actions workflow
 (`.github/workflows/build.yml`) builds on `windows-latest`, versions the EXE
 from the latest `vX.Y.Z` tag with [MinVer](https://github.com/adamralph/minver),
-and checks that it compiles on pushes and non-draft pull requests. To get a
+and checks that it compiles on pushes and pull requests. To get a
 downloadable artifact (the EXEs and `pdfium.dll`), start it from the Actions
-tab, or comment `/run` on a pull request (drafts included; needs write access).
+tab, or comment `/run` on a pull request (needs write access).
 
 `run-test.bat` runs a few non-interactive smoke tests (run it from a normal
 Command Prompt, not Git Bash).
