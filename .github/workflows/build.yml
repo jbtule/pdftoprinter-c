@@ -8,7 +8,8 @@ name: Windows build
 #   - pushes to build/main and pull requests: compile check only
 #   - manually from the Actions tab: uploads the build as an artifact. The
 #     input takes a branch, tag or SHA, or a PR number to build that PR merged
-#     into its base (versioned from the PR's own branch, e.g. 1.1.1-alpha.0.3+pr.1)
+#     into the current tip of its base (versioned from the PR's own branch,
+#     e.g. 1.1.1-alpha.0.3+pr.1)
 #   - a vX.Y.Z tag push: publishes a GitHub Release with the build attached
 #     (tags with a -suffix, e.g. v1.2.0-beta.1, are marked pre-release)
 
@@ -34,6 +35,9 @@ jobs:
     concurrency:
       group: build-${{ github.event_name }}-${{ github.event.pull_request.number || inputs.ref || github.ref }}
       cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: read    # look up a PR's base branch for manual PR builds
     outputs:
       version: ${{ steps.minver.outputs.version }}
     env:
@@ -45,11 +49,16 @@ jobs:
         shell: pwsh
         env:
           INPUT_REF: ${{ inputs.ref }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          # A bare number means "that PR, merged into its base".
+          # A bare number means "that PR, merged into its base": check out the
+          # base branch here and merge the PR below. (GitHub's refs/pull/N/merge
+          # is only refreshed now and then, so it can lag behind the base.)
           if ($env:INPUT_REF -match '^\d+$') {
-            "ref=refs/pull/$($env:INPUT_REF)/merge" >> $env:GITHUB_OUTPUT
-            "pr=$($env:INPUT_REF)"                  >> $env:GITHUB_OUTPUT
+            $base = gh pr view $env:INPUT_REF -R $env:GITHUB_REPOSITORY --json baseRefName -q .baseRefName
+            if (-not $base) { throw "PR #$($env:INPUT_REF) not found" }
+            "ref=$base"             >> $env:GITHUB_OUTPUT
+            "pr=$($env:INPUT_REF)"  >> $env:GITHUB_OUTPUT
           } else {
             "ref=$($env:INPUT_REF)" >> $env:GITHUB_OUTPUT
           }
@@ -59,6 +68,16 @@ jobs:
           persist-credentials: false
           fetch-depth: 0     # MinVer needs the history and tags
           ref: ${{ steps.ref.outputs.ref }}
+
+      - name: Merge PR into its base
+        if: steps.ref.outputs.pr != ''
+        shell: pwsh
+        env:
+          PR: ${{ steps.ref.outputs.pr }}
+        run: |
+          git fetch --quiet origin "pull/$env:PR/head"
+          git -c user.name=ci -c user.email=ci@localhost merge --no-ff --no-edit FETCH_HEAD
+          if ($LASTEXITCODE) { throw "PR #$env:PR does not merge cleanly into its base" }
 
       - name: Version (MinVer)
         id: minver
@@ -99,7 +118,8 @@ jobs:
           $pdfium = if (Test-Path pdfium\VERSION) { (Get-Content pdfium\VERSION) -join ' ' } else { 'unknown' }
           Write-Host "PDFium: $pdfium"
           New-Item -ItemType Directory dist | Out-Null
-          Copy-Item PDFtoPrinter.exe, PDFtoPrinterNative.exe, PDFtoPrinterSelect.exe, PDFtoPrinterSelectGUI.exe, pdfium.dll, README.md, LICENSE dist\
+          Copy-Item PDFtoPrinterNative.exe dist\PDFtoPrinter.exe
+          Copy-Item PDFtoPrinterNative.exe, PDFtoPrinterSelect.exe, PDFtoPrinterSelectGUI.exe, pdfium.dll, README.md, LICENSE dist\
           Copy-Item -Recurse examples dist\examples
           Copy-Item pdfium\LICENSE dist\LICENSE.pdfium -ErrorAction SilentlyContinue
           $info = "version $env:VER_STRING`ncommit $(git rev-parse HEAD)"
