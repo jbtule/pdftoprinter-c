@@ -24,14 +24,7 @@
 #include <math.h>
 
 #include "fpdfview.h"
-
-/* Print-mode values for FPDF_SetPrintMode (defined in fpdf_edit.h, which this
-   file does not otherwise need). Values match PDFium's WindowsPrintMode. */
-#ifndef FPDF_PRINTMODE_EMF
-#define FPDF_PRINTMODE_EMF                            0
-#define FPDF_PRINTMODE_POSTSCRIPT3_PASSTHROUGH        5
-#define FPDF_PRINTMODE_POSTSCRIPT3_TYPE42_PASSTHROUGH 8
-#endif
+#include "fpdf_edit.h"      /* FPDF_PRINTMODE_* for FPDF_SetPrintMode */
 
 /* ----- Exit codes (mirror the AutoIt version where meaningful) ----------- */
 #define EXIT_OK             0
@@ -389,7 +382,11 @@ static void apply_arg(options *o, const wchar_t *arg, int fromConfig,
         if      (_wcsicmp(rest, L"gdi") == 0 || _wcsicmp(rest, L"vector") == 0) o->renderMode = RENDER_GDI;
         else if (_wcsicmp(rest, L"ps")  == 0 || _wcsicmp(rest, L"postscript") == 0) o->renderMode = RENDER_PS;
         else if (_wcsicmp(rest, L"ps42") == 0) o->renderMode = RENDER_PS42;
-        else o->renderMode = RENDER_BITMAP;   /* "bitmap" or anything unknown */
+        else {
+            if (_wcsicmp(rest, L"bitmap") != 0)
+                fwprintf(stderr, L"Warning: unknown /render=%s; using bitmap.\n", rest);
+            o->renderMode = RENDER_BITMAP;
+        }
         return;
     }
 
@@ -1220,6 +1217,10 @@ L"the bin numbers and names for a printer.\r\n\r\n"
 L"Other options: /r recurses the current folder; /R# recurses # levels; /p:password opens an "
 L"encrypted PDF; /csv writes a list of files printed; /mock lists files without printing; "
 L"/s runs silently; /outfile=path prints to a file.\r\n\r\n"
+L"Rendering: /render=bitmap (the default) sends each page as a full-page image. /render=gdi "
+L"keeps text and line art as vectors. /render=ps sends PostScript inside the driver's job "
+L"(PostScript drivers only; otherwise it falls back to gdi), and /render=ps42 also embeds "
+L"TrueType fonts as Type 42.\r\n\r\n"
 L"Settings files: settings.cfg next to the program loads automatically; /settings=file.cfg "
 L"loads another. Each line is one option without the leading slash; lines starting with # or "
 L"; are comments.";

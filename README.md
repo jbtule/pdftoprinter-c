@@ -56,6 +56,7 @@ PDFtoPrinter [path\]file.pdf [more.pdf ...] ["printer name"] [pages=...]
              [/auto-rotate] [/auto-center] [/portrait] [/landscape]
              [/duplex|/duplex=short] [/simplex] [/tray=#] [/autotray]
              [/outfile=path] [/settings=profile.cfg] [/listtrays]
+             [/render=bitmap|gdi|ps|ps42]
 ```
 
 - Quote any path/filename containing spaces. Relative paths and `*`/`?`
@@ -66,6 +67,11 @@ PDFtoPrinter [path\]file.pdf [more.pdf ...] ["printer name"] [pages=...]
   pages, and using both fits either way.
 - `/mock` lists what would print (and the per-page tray decisions) without
   printing. `/s` runs silently. `/outfile=path` prints to a file.
+- `/render=` picks how pages reach the printer. `bitmap` (default) sends each
+  page as a full-page image. `gdi` has PDFium draw to the printer directly, so
+  text and line art stay vector. `ps` sends PostScript level 3 inside the
+  driver's own job (PostScript drivers only; others fall back to `gdi`), and
+  `ps42` also embeds TrueType fonts as Type 42.
 
 ### Page ranges
 
