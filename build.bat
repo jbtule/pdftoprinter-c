@@ -63,6 +63,8 @@ cl /nologo /W3 /O2 /MD /D_UNICODE /DUNICODE /D_CRT_SECURE_NO_WARNINGS /I pdfium\
 if errorlevel 1 (echo BUILD FAILED & exit /b 1)
 
 copy /Y pdfium\bin\pdfium.dll . >nul
+REM PDFtoPrinter.exe = default-printer name, as in the original release
+copy /Y PDFtoPrinterNative.exe PDFtoPrinter.exe >nul
 REM rename-triggered variants: *Select* = console menu, *SelectGUI* = listbox dialog
 copy /Y PDFtoPrinterNative.exe PDFtoPrinterSelect.exe >nul
 copy /Y PDFtoPrinterNative.exe PDFtoPrinterSelectGUI.exe >nul

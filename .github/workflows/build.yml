@@ -1,32 +1,28 @@
 name: Windows build
 
-# Builds PDFtoPrinterNative.exe with build.bat. /run and manual runs also
-# upload it (with pdfium.dll) as an artifact to download and test on a Windows
-# machine; push and PR builds only check that it compiles. The version comes
-# from MinVer (the latest vX.Y.Z tag plus commit height) and is stamped into the
-# exe's version resource and the artifact name. PR and /run builds take it from
-# the PR's own branch and add +pr.N, e.g. 1.1.1-alpha.0.3+pr.1.
+# Builds PDFtoPrinterNative.exe with build.bat. The version comes from MinVer
+# (the latest vX.Y.Z tag plus commit height) and is stamped into the exe's
+# version resource and the artifact name.
 #
 # Runs on:
-#   - pushes to build/main, and pull requests (drafts included)
-#   - a "/run" comment on any pull request (drafts included), from someone with
-#     write access; the run replies on the PR with a link to the artifact.
-#     Like PR builds, it builds the PR merged into its base branch, so a branch
-#     cut from main still gets this repo's build setup.
-#   - manually from the Actions tab (optionally for a given branch/tag/SHA)
-#
-# The /run trigger only works once this file is on the repo's default branch.
+#   - pushes to build/main and pull requests: compile check only
+#   - manually from the Actions tab: uploads the build as an artifact. The
+#     input takes a branch, tag or SHA, or a PR number to build that PR merged
+#     into its base (versioned from the PR's own branch, e.g. 1.1.1-alpha.0.3+pr.1)
+#   - a vX.Y.Z tag push: publishes a GitHub Release with the build attached
+#     (tags with a -suffix, e.g. v1.2.0-beta.1, are marked pre-release)
 
 on:
   push:
     branches: [build, main]
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
   pull_request:
-  issue_comment:
-    types: [created]
   workflow_dispatch:
     inputs:
       ref:
-        description: Branch, tag or SHA to build (blank = the selected branch)
+        description: Branch, tag, SHA, or PR number (blank = the selected branch)
         required: false
 
 permissions:
@@ -34,48 +30,41 @@ permissions:
 
 jobs:
   build:
-    if: >-
-      github.event_name == 'push' || github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'pull_request' ||
-      (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
-       startsWith(github.event.comment.body, '/run') &&
-       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
     runs-on: windows-latest
-    # Job-level so plain (non-/run) PR comments can't cancel a build in progress,
-    # and per event so a push to a PR doesn't cancel its /run build.
     concurrency:
-      group: build-${{ github.event_name }}-${{ github.event.issue.number || github.event.pull_request.number || github.ref }}
+      group: build-${{ github.event_name }}-${{ github.event.pull_request.number || inputs.ref || github.ref }}
       cancel-in-progress: true
-    permissions:
-      contents: read
-      issues: write          # react to the /run comment
-      pull-requests: write
     outputs:
       version: ${{ steps.minver.outputs.version }}
-      artifact-url: ${{ steps.upload.outputs.artifact-url }}
+    env:
+      # Only these builds are downloaded; push and PR builds are a compile check.
+      PACKAGE: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') }}
     steps:
-      - name: Acknowledge /run
-        if: github.event_name == 'issue_comment'
-        uses: actions/github-script@v9
-        with:
-          script: |
-            await github.rest.reactions.createForIssueComment({
-              owner: context.repo.owner, repo: context.repo.repo,
-              comment_id: context.payload.comment.id, content: 'rocket' });
+      - name: Resolve ref
+        id: ref
+        shell: pwsh
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+        run: |
+          # A bare number means "that PR, merged into its base".
+          if ($env:INPUT_REF -match '^\d+$') {
+            "ref=refs/pull/$($env:INPUT_REF)/merge" >> $env:GITHUB_OUTPUT
+            "pr=$($env:INPUT_REF)"                  >> $env:GITHUB_OUTPUT
+          } else {
+            "ref=$($env:INPUT_REF)" >> $env:GITHUB_OUTPUT
+          }
 
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
           fetch-depth: 0     # MinVer needs the history and tags
-          ref: >-
-            ${{ github.event_name == 'issue_comment' && format('refs/pull/{0}/merge', github.event.issue.number)
-             || inputs.ref || '' }}
+          ref: ${{ steps.ref.outputs.ref }}
 
       - name: Version (MinVer)
         id: minver
         shell: pwsh
         env:
-          PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          PR_NUMBER: ${{ github.event.pull_request.number || steps.ref.outputs.pr }}
         run: |
           dotnet tool install --global minver-cli --version 8.0.0
           # PR builds compile the merge commit, but version from the PR's own
@@ -104,13 +93,13 @@ jobs:
         run: build.bat
 
       - name: Collect artifact
-        if: github.event_name == 'issue_comment' || github.event_name == 'workflow_dispatch'
+        if: env.PACKAGE == 'true'
         shell: pwsh
         run: |
           $pdfium = if (Test-Path pdfium\VERSION) { (Get-Content pdfium\VERSION) -join ' ' } else { 'unknown' }
           Write-Host "PDFium: $pdfium"
           New-Item -ItemType Directory dist | Out-Null
-          Copy-Item PDFtoPrinterNative.exe, PDFtoPrinterSelect.exe, PDFtoPrinterSelectGUI.exe, pdfium.dll, README.md, LICENSE dist\
+          Copy-Item PDFtoPrinter.exe, PDFtoPrinterNative.exe, PDFtoPrinterSelect.exe, PDFtoPrinterSelectGUI.exe, pdfium.dll, README.md, LICENSE dist\
           Copy-Item -Recurse examples dist\examples
           Copy-Item pdfium\LICENSE dist\LICENSE.pdfium -ErrorAction SilentlyContinue
           $info = "version $env:VER_STRING`ncommit $(git rev-parse HEAD)"
@@ -121,35 +110,39 @@ jobs:
           Get-ChildItem dist -Recurse | Format-Table Length, FullName
 
       - name: Upload artifact
-        if: github.event_name == 'issue_comment' || github.event_name == 'workflow_dispatch'
-        id: upload
+        if: env.PACKAGE == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: PDFtoPrinter-${{ steps.minver.outputs.version }}-win-x64
           path: dist/
           if-no-files-found: error
 
-  report:
-    # Reply on the PR for /run builds, pass or fail.
+  release:
     needs: build
-    if: always() && github.event_name == 'issue_comment' && needs.build.result != 'skipped'
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
-      issues: write
-      pull-requests: write
+      contents: write        # create the release and upload its files
     steps:
-      - uses: actions/github-script@v9
-        env:
-          RESULT: ${{ needs.build.result }}
-          VERSION: ${{ needs.build.outputs.version }}
-          ARTIFACT_URL: ${{ needs.build.outputs.artifact-url }}
+      - uses: actions/download-artifact@v7
         with:
-          script: |
-            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const { RESULT, VERSION, ARTIFACT_URL } = process.env;
-            const body = RESULT === 'success'
-              ? `✅ Windows build \`${VERSION}\` succeeded — [download artifact](${ARTIFACT_URL}) · [run](${run})`
-              : `❌ Windows build ${RESULT} — [run log](${run})`;
-            await github.rest.issues.createComment({
-              owner: context.repo.owner, repo: context.repo.repo,
-              issue_number: context.issue.number, body });
+          name: PDFtoPrinter-${{ needs.build.outputs.version }}-win-x64
+          path: dist
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          zip="PDFtoPrinter-$VERSION-win-x64.zip"
+          (cd dist && zip -qr "../$zip" .)
+          # The zip, plus the programs and DLL on their own as earlier releases had.
+          files=("$zip" dist/PDFtoPrinter.exe dist/PDFtoPrinterNative.exe
+                 dist/PDFtoPrinterSelect.exe dist/PDFtoPrinterSelectGUI.exe dist/pdfium.dll)
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${files[@]}" --clobber -R "$GITHUB_REPOSITORY"
+          else
+            pre=(); [[ "$TAG" == *-* ]] && pre=(--prerelease)
+            gh release create "$TAG" "${files[@]}" --title "$TAG" --generate-notes "${pre[@]}" -R "$GITHUB_REPOSITORY"
+          fi

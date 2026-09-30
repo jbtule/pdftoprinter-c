@@ -48,8 +48,10 @@ Local builds are versioned `0.0.0-dev`. The GitHub Actions workflow
 (`.github/workflows/build.yml`) builds on `windows-latest`, versions the EXE
 from the latest `vX.Y.Z` tag with [MinVer](https://github.com/adamralph/minver),
 and checks that it compiles on pushes and pull requests. To get a
-downloadable artifact (the EXEs and `pdfium.dll`), start it from the Actions
-tab, or comment `/run` on a pull request (needs write access).
+downloadable artifact (the EXEs and `pdfium.dll`), run it from the Actions tab;
+enter a PR number there to build that pull request. Pushing a `vX.Y.Z` tag
+(e.g. `v1.2.0`, or `v1.2.0-beta.1` for a pre-release) publishes a GitHub
+Release with the build attached.
 
 `run-test.bat` runs a few non-interactive smoke tests (run it from a normal
 Command Prompt, not Git Bash).
