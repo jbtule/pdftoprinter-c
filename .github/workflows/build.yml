@@ -1,0 +1,131 @@
+name: Windows build
+
+# Builds PDFtoPrinterNative.exe with build.bat and uploads it (with pdfium.dll)
+# as an artifact to download and test on a Windows machine. The version comes
+# from MinVer (the latest vX.Y.Z tag plus commit height) and is stamped into the
+# exe's version resource and the artifact name.
+#
+# Runs on:
+#   - pushes to build/main, and non-draft pull requests
+#   - a "/run" comment on any pull request (drafts included), from someone with
+#     write access; the run replies on the PR with a link to the artifact
+#   - manually from the Actions tab (optionally for a given branch/tag/SHA)
+#
+# The /run trigger only works once this file is on the repo's default branch.
+
+on:
+  push:
+    branches: [build, main]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or SHA to build (blank = the selected branch)
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') ||
+      (github.event_name == 'pull_request' && !github.event.pull_request.draft) ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+       startsWith(github.event.comment.body, '/run') &&
+       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+    runs-on: windows-latest
+    # Job-level so plain (non-/run) PR comments can't cancel a build in progress.
+    concurrency:
+      group: build-${{ github.event.issue.number || github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      issues: write          # react to the /run comment
+      pull-requests: write
+    outputs:
+      version: ${{ steps.minver.outputs.version }}
+      artifact-url: ${{ steps.upload.outputs.artifact-url }}
+    steps:
+      - name: Acknowledge /run
+        if: github.event_name == 'issue_comment'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              comment_id: context.payload.comment.id, content: 'rocket' });
+
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0     # MinVer needs the history and tags
+          ref: >-
+            ${{ github.event_name == 'issue_comment' && format('refs/pull/{0}/head', github.event.issue.number)
+             || inputs.ref || '' }}
+
+      - name: Version (MinVer)
+        id: minver
+        shell: pwsh
+        run: |
+          dotnet tool install --global minver-cli --version 8.0.0
+          $v = (minver --tag-prefix v --verbosity warn).Trim()
+          $m = [regex]::Match($v, '^(\d+)\.(\d+)\.(\d+)')
+          "version=$v" >> $env:GITHUB_OUTPUT
+          "VER_STRING=$v"               >> $env:GITHUB_ENV
+          "VER_MAJOR=$($m.Groups[1])"   >> $env:GITHUB_ENV
+          "VER_MINOR=$($m.Groups[2])"   >> $env:GITHUB_ENV
+          "VER_PATCH=$($m.Groups[3])"   >> $env:GITHUB_ENV
+          Write-Host "Version: $v"
+
+      - name: Build
+        shell: cmd
+        run: build.bat
+
+      - name: Collect artifact
+        shell: pwsh
+        run: |
+          $pdfium = if (Test-Path pdfium\VERSION) { (Get-Content pdfium\VERSION) -join ' ' } else { 'unknown' }
+          Write-Host "PDFium: $pdfium"
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item PDFtoPrinterNative.exe, PDFtoPrinterSelect.exe, PDFtoPrinterSelectGUI.exe, pdfium.dll, README.md, LICENSE dist\
+          Copy-Item -Recurse examples dist\examples
+          Copy-Item pdfium\LICENSE dist\LICENSE.pdfium -ErrorAction SilentlyContinue
+          "version $env:VER_STRING`ncommit $(git rev-parse HEAD)`nPDFium $pdfium" | Set-Content dist\BUILDINFO.txt
+          Get-ChildItem dist -Recurse | Format-Table Length, FullName
+
+      - name: Upload artifact
+        id: upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: PDFtoPrinter-${{ steps.minver.outputs.version }}-win-x64
+          path: dist/
+          if-no-files-found: error
+
+  report:
+    # Reply on the PR for /run builds, pass or fail.
+    needs: build
+    if: always() && github.event_name == 'issue_comment' && needs.build.result != 'skipped'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/github-script@v9
+        env:
+          RESULT: ${{ needs.build.result }}
+          VERSION: ${{ needs.build.outputs.version }}
+          ARTIFACT_URL: ${{ needs.build.outputs.artifact-url }}
+        with:
+          script: |
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const { RESULT, VERSION, ARTIFACT_URL } = process.env;
+            const body = RESULT === 'success'
+              ? `✅ Windows build \`${VERSION}\` succeeded — [download artifact](${ARTIFACT_URL}) · [run](${run})`
+              : `❌ Windows build ${RESULT} — [run log](${run})`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: context.issue.number, body });

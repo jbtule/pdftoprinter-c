@@ -24,6 +24,17 @@ if not exist "pdfium\include\fpdfview.h" (
   del pdfium-win-x64.tgz
 )
 
+REM ---- version stamp (CI sets these from MinVer; local builds get 0.0.0-dev) --
+if not defined VER_MAJOR set VER_MAJOR=0
+if not defined VER_MINOR set VER_MINOR=0
+if not defined VER_PATCH set VER_PATCH=0
+if not defined VER_STRING set VER_STRING=0.0.0-dev
+> version.h echo #define VER_MAJOR %VER_MAJOR%
+>> version.h echo #define VER_MINOR %VER_MINOR%
+>> version.h echo #define VER_PATCH %VER_PATCH%
+>> version.h echo #define VER_STRING "%VER_STRING%"
+echo Version %VER_STRING%
+
 REM ---- compile resources + program -----------------------------------------
 rc /nologo /fo app.res app.rc
 if errorlevel 1 (echo RC FAILED & exit /b 1)

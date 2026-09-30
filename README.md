@@ -43,6 +43,13 @@ On the first run, `build.bat` downloads the prebuilt PDFium SDK from
 `pdfium.dll` (which must sit next to the EXE), and two renamed copies
 (`PDFtoPrinterSelect.exe`, `PDFtoPrinterSelectGUI.exe`).
 
+Local builds are versioned `0.0.0-dev`. The GitHub Actions workflow
+(`.github/workflows/build.yml`) builds on `windows-latest`, versions the EXE
+from the latest `vX.Y.Z` tag with [MinVer](https://github.com/adamralph/minver),
+and uploads the EXEs and `pdfium.dll` as a downloadable artifact. It runs on
+pushes, on non-draft pull requests, from the Actions tab, and when someone with
+write access comments `/run` on a pull request (drafts included).
+
 `run-test.bat` runs a few non-interactive smoke tests (run it from a normal
 Command Prompt, not Git Bash).
 
