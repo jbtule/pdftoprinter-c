@@ -72,7 +72,7 @@ PDFtoPrinter [path\]file.pdf [more.pdf ...] ["printer name"] [pages=...]
   driver's own job (PostScript drivers only; others fall back to `bitmap`), and
   `ps42` also embeds TrueType fonts as Type 42. Type 42 only applies to
   embedded CID TrueType fonts; `examples/ps42-test.pdf` is a test page made of
-  them (built by `examples/make-ps42-test.py`).
+  them.
 
 ### Page ranges
 
