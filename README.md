@@ -69,7 +69,9 @@ PDFtoPrinter [path\]file.pdf [more.pdf ...] ["printer name"] [pages=...]
   printing. `/s` runs silently. `/outfile=path` prints to a file.
 - `/render=` picks how pages reach the printer. `bitmap` (default) sends each
   page as a full-page image. `gdi` has PDFium draw to the printer directly, so
-  text and line art stay vector. `ps` sends PostScript level 3 inside the
+  text and line art stay vector; pages with images, transparency, gradients or
+  hairlines print as `bitmap` instead, with a warning (`/mock /render=gdi`
+  lists which pages). `ps` sends PostScript level 3 inside the
   driver's own job (PostScript drivers only; others fall back to `gdi`), and
   `ps42` also embeds TrueType fonts as Type 42.
 
