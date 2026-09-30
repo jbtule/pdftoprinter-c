@@ -55,7 +55,8 @@ static int g_wroteOutput = 0;
            driver still writes the job header (finishing etc.). Needs a
            PostScript driver; falls back to gdi if the driver lacks support.
    ps42:   as ps, but embeds TrueType fonts as Type 42 (sharper text). */
-enum { RENDER_BITMAP = 0, RENDER_GDI = 1, RENDER_PS = 2, RENDER_PS42 = 3 };
+enum { RENDER_BITMAP = 0, RENDER_GDI = 1, RENDER_PS = 2, RENDER_PS42 = 3,
+       RENDER_GDI_PATHS = 4 };   /* TEMPORARY test: gdi with FPDF_NO_NATIVETEXT */
 
 /* ----- Scaling model ----------------------------------------------------- */
 enum { SCALE_FLAGS = 0, SCALE_PERCENT = 1 };
@@ -390,6 +391,7 @@ static void apply_arg(options *o, const wchar_t *arg, int fromConfig,
     if (optmatch(arg, L"listtrays")) { o->listtrays = 1; return; }
     if ((rest = optprefix(arg, L"render="))) {
         if      (_wcsicmp(rest, L"gdi") == 0 || _wcsicmp(rest, L"vector") == 0) o->renderMode = RENDER_GDI;
+        else if (_wcsicmp(rest, L"gdi-paths") == 0) o->renderMode = RENDER_GDI_PATHS;
         else if (_wcsicmp(rest, L"ps")  == 0 || _wcsicmp(rest, L"postscript") == 0) o->renderMode = RENDER_PS;
         else if (_wcsicmp(rest, L"ps42") == 0) o->renderMode = RENDER_PS42;
         else {
@@ -703,7 +705,11 @@ static int print_page(HDC hdc, DEVMODEW *dm, FPDF_DOCUMENT doc, int pageIndex, c
         int vok = 1;
         if (StartPage(hdc) <= 0) vok = 0;
         if (vok) {
-            FPDF_RenderPage(hdc, vpage, x, y, tw, th, rotate, FPDF_PRINTING | FPDF_ANNOT);
+            /* TEMPORARY: gdi-paths draws glyphs as paths instead of through
+               GDI's own text output, to compare glyph weight against gdi. */
+            int vflags = FPDF_PRINTING | FPDF_ANNOT;
+            if (o->renderMode == RENDER_GDI_PATHS) vflags |= FPDF_NO_NATIVETEXT;
+            FPDF_RenderPage(hdc, vpage, x, y, tw, th, rotate, vflags);
             if (EndPage(hdc) <= 0) vok = 0;
         }
         FPDF_ClosePage(vpage);
@@ -1404,7 +1410,7 @@ int wmain(int argc, wchar_t **argv) {
                 o.renderMode = RENDER_GDI;
                 FPDF_SetPrintMode(FPDF_PRINTMODE_EMF);
             }
-        } else if (o.renderMode == RENDER_GDI) {
+        } else if (o.renderMode == RENDER_GDI || o.renderMode == RENDER_GDI_PATHS) {
             FPDF_SetPrintMode(FPDF_PRINTMODE_EMF);
         }
     }
