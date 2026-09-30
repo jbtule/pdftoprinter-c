@@ -59,11 +59,12 @@ Command Prompt, not Git Bash).
 ```
 PDFtoPrinter [path\]file.pdf [more.pdf ...] ["printer name"] [pages=...]
              [copies=#] [focus="title"] [/r] [/R[#]] [/p:password]
-             [/csv] [/mock] [/s]
+             [/csv] [/mock] [/s] [/jobname="name"]
              [/scale=#|fit] [/shrink-to-fit] [/expand-to-fit]
              [/auto-rotate] [/auto-center] [/portrait] [/landscape]
              [/duplex|/duplex=short] [/simplex] [/tray=#] [/autotray]
              [/outfile=path] [/settings=profile.cfg] [/listtrays]
+             [/render=bitmap|ps|ps42]
 ```
 
 - Quote any path/filename containing spaces. Relative paths and `*`/`?`
@@ -72,8 +73,17 @@ PDFtoPrinter [path\]file.pdf [more.pdf ...] ["printer name"] [pages=...]
 - `/scale=#` is an explicit percentage and overrides the fit options.
   `/shrink-to-fit` shrinks oversized pages, `/expand-to-fit` enlarges small
   pages, and using both fits either way.
+- `/jobname="name"` sets the job name shown in the print queue (default: the
+  PDF's file name). `{file}` in the name inserts the file name, so
+  `/jobname="Batch 42 - {file}"` keeps several PDFs apart.
 - `/mock` lists what would print (and the per-page tray decisions) without
   printing. `/s` runs silently. `/outfile=path` prints to a file.
+- `/render=` picks how pages reach the printer. `bitmap` (default) sends each
+  page as a full-page image. `ps` sends PostScript level 3 inside the
+  driver's own job (PostScript drivers only; others fall back to `bitmap`), and
+  `ps42` also embeds TrueType fonts as Type 42. Type 42 only applies to
+  embedded CID TrueType fonts; `examples/ps42-test.pdf` is a test page made of
+  them.
 
 ### Page ranges
 
