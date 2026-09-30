@@ -1,8 +1,8 @@
 @echo off
 REM ===========================================================================
 REM  PDFtoPrinter (C) - build script (Visual Studio 2022, x64)
-REM  On first run it downloads the PDFium prebuilt SDK (needs Windows 10+ for
-REM  the built-in curl and tar). Output: PDFtoPrinterNative.exe + pdfium.dll.
+REM  On first run it downloads the pinned PDFium prebuilt SDK (needs Windows
+REM  10+ for the built-in curl and tar). Output: PDFtoPrinterNative.exe + pdfium.dll.
 REM ===========================================================================
 cd /d "%~dp0"
 
@@ -14,14 +14,27 @@ if not defined VSPATH (
 )
 call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat" >nul
 
-REM ---- fetch PDFium on first build ------------------------------------------
-if not exist "pdfium\include\fpdfview.h" (
-  echo Downloading PDFium prebuilt binaries ...
-  curl -L -o pdfium-win-x64.tgz https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-win-x64.tgz
+REM ---- fetch PDFium (pinned) -------------------------------------------------
+REM To upgrade: pick a release from github.com/bblanchon/pdfium-binaries/releases,
+REM set PDFIUM_BUILD to its chromium/NNNN number and PDFIUM_SHA256 to the hash of
+REM its pdfium-win-x64.tgz. A changed pin re-downloads on the next build.
+set "PDFIUM_BUILD=8076"
+set "PDFIUM_SHA256=808d36da9bc5a3104315fb307c80998121f565ee53953633bf33e80d7429e5ac"
+
+set "PDFIUM_HAVE="
+if exist "pdfium\.pinned" set /p PDFIUM_HAVE=<"pdfium\.pinned"
+if not "%PDFIUM_HAVE%"=="%PDFIUM_BUILD%" (
+  echo Downloading PDFium chromium/%PDFIUM_BUILD% ...
+  if exist pdfium rmdir /s /q pdfium
+  curl -fL -o pdfium-win-x64.tgz https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%%2F%PDFIUM_BUILD%/pdfium-win-x64.tgz
   if errorlevel 1 (echo PDFium download failed. & exit /b 1)
-  if not exist pdfium mkdir pdfium
+  powershell -NoProfile -Command "if ((Get-FileHash pdfium-win-x64.tgz -Algorithm SHA256).Hash -ne '%PDFIUM_SHA256%') { exit 1 }"
+  if errorlevel 1 (echo PDFium download does not match PDFIUM_SHA256. & del pdfium-win-x64.tgz & exit /b 1)
+  mkdir pdfium
   tar -xzf pdfium-win-x64.tgz -C pdfium
+  if errorlevel 1 (echo PDFium extract failed. & exit /b 1)
   del pdfium-win-x64.tgz
+  > pdfium\.pinned echo %PDFIUM_BUILD%
 )
 
 REM ---- version stamp (CI sets these from MinVer; local builds get 0.0.0-dev) --

@@ -37,9 +37,10 @@ later** (the build uses the built-in `curl` and `tar`).
 build.bat
 ```
 
-On the first run, `build.bat` downloads the prebuilt PDFium SDK from
-[bblanchon/pdfium-binaries](https://github.com/bblanchon/pdfium-binaries) into a
-`pdfium\` folder, then compiles. The output is `PDFtoPrinterNative.exe` plus
+On the first run, `build.bat` downloads a pinned release of the prebuilt PDFium
+SDK from [bblanchon/pdfium-binaries](https://github.com/bblanchon/pdfium-binaries)
+into a `pdfium\` folder, checks its SHA-256, then compiles. To upgrade PDFium,
+change `PDFIUM_BUILD` and `PDFIUM_SHA256` at the top of `build.bat`. The output is `PDFtoPrinterNative.exe` plus
 `pdfium.dll` (which must sit next to the EXE), and two renamed copies
 (`PDFtoPrinterSelect.exe`, `PDFtoPrinterSelectGUI.exe`).
 
