@@ -1,7 +1,8 @@
 name: Windows build
 
-# Builds PDFtoPrinterNative.exe with build.bat and uploads it (with pdfium.dll)
-# as an artifact to download and test on a Windows machine. The version comes
+# Builds PDFtoPrinterNative.exe with build.bat. /run and manual runs also
+# upload it (with pdfium.dll) as an artifact to download and test on a Windows
+# machine; push and PR builds only check that it compiles. The version comes
 # from MinVer (the latest vX.Y.Z tag plus commit height) and is stamped into the
 # exe's version resource and the artifact name.
 #
@@ -86,6 +87,7 @@ jobs:
         run: build.bat
 
       - name: Collect artifact
+        if: github.event_name == 'issue_comment' || github.event_name == 'workflow_dispatch'
         shell: pwsh
         run: |
           $pdfium = if (Test-Path pdfium\VERSION) { (Get-Content pdfium\VERSION) -join ' ' } else { 'unknown' }
@@ -98,6 +100,7 @@ jobs:
           Get-ChildItem dist -Recurse | Format-Table Length, FullName
 
       - name: Upload artifact
+        if: github.event_name == 'issue_comment' || github.event_name == 'workflow_dispatch'
         id: upload
         uses: actions/upload-artifact@v7
         with:
