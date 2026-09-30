@@ -88,7 +88,7 @@ jobs:
           dotnet tool install --global minver-cli --version 8.0.0
           # PR builds compile the merge commit, but version from the PR's own
           # branch so each push bumps the height, then tag it with the PR number.
-          $prHead = git rev-parse --verify --quiet 'HEAD^2'
+          $prHead = ((git rev-list --parents -n 1 HEAD) -split ' ')[2]
           if ($env:PR_NUMBER -and $prHead) {
             $dir = Join-Path $env:RUNNER_TEMP prhead
             git worktree add --quiet --detach $dir $prHead
@@ -124,7 +124,7 @@ jobs:
           Copy-Item pdfium\LICENSE dist\LICENSE.pdfium -ErrorAction SilentlyContinue
           $info = "version $env:VER_STRING`ncommit $(git rev-parse HEAD)"
           # On a PR merge commit, also record the PR branch's own commit.
-          $prHead = git rev-parse --verify --quiet 'HEAD^2'
+          $prHead = ((git rev-list --parents -n 1 HEAD) -split ' ')[2]
           if ($prHead) { $info += "`nPR head $prHead" }
           "$info`nPDFium $pdfium" | Set-Content dist\BUILDINFO.txt
           Get-ChildItem dist -Recurse | Format-Table Length, FullName
