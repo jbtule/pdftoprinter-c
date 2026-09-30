@@ -24,8 +24,7 @@
 #include <math.h>
 
 #include "fpdfview.h"
-#include "fpdf_edit.h"      /* FPDF_PRINTMODE_*, page objects */
-#include "fpdf_annot.h"     /* annotation subtypes, for gdi_page_ok */
+#include "fpdf_edit.h"      /* FPDF_PRINTMODE_* for FPDF_SetPrintMode */
 
 /* ----- Exit codes (mirror the AutoIt version where meaningful) ----------- */
 #define EXIT_OK             0
@@ -49,14 +48,15 @@ static int g_wroteOutput = 0;
 #define fwprintf(f, ...) (((f) == stdout || (f) == stderr) ? (g_wroteOutput = 1) : 0, \
                           fwprintf(f, __VA_ARGS__))
 
-/* ----- Render model (/render=bitmap|gdi|ps) ------------------------------ */
+/* ----- Render model (/render=bitmap|ps|ps42) ----------------------------- */
 /* bitmap: original behaviour - full-page raster via StretchDIBits.
-   gdi:    PDFium draws straight to the printer DC; text/paths stay vector.
    ps:     PDFium emits PostScript level 3 inside the driver's own job, so the
            driver still writes the job header (finishing etc.). Needs a
-           PostScript driver; falls back to gdi if the driver lacks support.
-   ps42:   as ps, but embeds TrueType fonts as Type 42 (sharper text). */
-enum { RENDER_BITMAP = 0, RENDER_GDI = 1, RENDER_PS = 2, RENDER_PS42 = 3 };
+           PostScript driver; falls back to bitmap if the driver lacks support.
+   ps42:   as ps, but embedded CID TrueType fonts go as Type 42.
+   (There is no gdi/EMF mode: PDFium rounds GDI paths to whole device pixels,
+   which prints thin glyph stems and periods visibly too heavy.) */
+enum { RENDER_BITMAP = 0, RENDER_PS = 1, RENDER_PS42 = 2 };
 
 /* ----- Scaling model ----------------------------------------------------- */
 enum { SCALE_FLAGS = 0, SCALE_PERCENT = 1 };
@@ -89,7 +89,7 @@ typedef struct {
     int      trayExplicit;           /* user named a tray option -> be verbose */
     struct { wchar_t name[32]; int bin; } traymap[32];  /* tray <size>=<bin> */
     int      traymapCount;
-    int      renderMode;             /* RENDER_BITMAP (default) | GDI | PS   */
+    int      renderMode;             /* RENDER_BITMAP (default) | PS | PS42  */
 } options;
 
 /* ----- Simple growable vector of wide strings ---------------------------- */
@@ -390,8 +390,7 @@ static void apply_arg(options *o, const wchar_t *arg, int fromConfig,
 
     if (optmatch(arg, L"listtrays")) { o->listtrays = 1; return; }
     if ((rest = optprefix(arg, L"render="))) {
-        if      (_wcsicmp(rest, L"gdi") == 0 || _wcsicmp(rest, L"vector") == 0) o->renderMode = RENDER_GDI;
-        else if (_wcsicmp(rest, L"ps")  == 0 || _wcsicmp(rest, L"postscript") == 0) o->renderMode = RENDER_PS;
+        if      (_wcsicmp(rest, L"ps")  == 0 || _wcsicmp(rest, L"postscript") == 0) o->renderMode = RENDER_PS;
         else if (_wcsicmp(rest, L"ps42") == 0) o->renderMode = RENDER_PS42;
         else {
             if (_wcsicmp(rest, L"bitmap") != 0)
@@ -628,54 +627,6 @@ static int list_trays(const wchar_t *printer) {
 /*  Render one page and emit it to the printer DC                            */
 /* ========================================================================= */
 
-/* ---- /render=gdi page check ----------------------------------------------
-   PDFium rounds every path point to a whole device pixel before handing it to
-   GDI, which makes thin glyph stems (I, l, periods) up to a pixel too wide.
-   print_page therefore draws gdi pages on a GDI_SUBDOTS-times finer grid via a
-   world transform. That is only safe for plain text and vector paths: for
-   transparency, images and shadings PDFium sizes temporary bitmaps from the
-   device size (GDI_SUBDOTS^2 times more memory), and strokes thinner than a
-   device pixel would shrink below one. Such pages print as bitmap instead. */
-#define GDI_SUBDOTS 16
-
-static int gdi_object_ok(FPDF_PAGEOBJECT obj, double min_stroke_pt) {
-    switch (FPDFPageObj_GetType(obj)) {
-    case FPDF_PAGEOBJ_TEXT:
-        return 1;
-    case FPDF_PAGEOBJ_PATH: {
-        int fillmode = 0; FPDF_BOOL stroke = 0; float w = 0;
-        if (!FPDFPath_GetDrawMode(obj, &fillmode, &stroke)) return 0;
-        if (stroke && (!FPDFPageObj_GetStrokeWidth(obj, &w) || w < min_stroke_pt)) return 0;
-        return 1;
-    }
-    case FPDF_PAGEOBJ_FORM: {
-        int n = FPDFFormObj_CountObjects(obj);
-        for (int i = 0; i < n; i++)
-            if (!gdi_object_ok(FPDFFormObj_GetObject(obj, (unsigned long)i), min_stroke_pt))
-                return 0;
-        return 1;
-    }
-    default:                                    /* image, shading, unknown */
-        return 0;
-    }
-}
-
-/* min_stroke_pt: one device pixel in PDF points at the print scale. */
-static int gdi_page_ok(FPDF_PAGE page, double min_stroke_pt) {
-    if (FPDFPage_HasTransparency(page)) return 0;
-    int n = FPDFPage_CountObjects(page);
-    for (int i = 0; i < n; i++)
-        if (!gdi_object_ok(FPDFPage_GetObject(page, i), min_stroke_pt)) return 0;
-    int na = FPDFPage_GetAnnotCount(page);      /* links draw nothing */
-    for (int i = 0; i < na; i++) {
-        FPDF_ANNOTATION a = FPDFPage_GetAnnot(page, i);
-        int link = a && FPDFAnnot_GetSubtype(a) == FPDF_ANNOT_LINK;
-        if (a) FPDFPage_CloseAnnot(a);
-        if (!link) return 0;
-    }
-    return 1;
-}
-
 static int print_page(HDC hdc, DEVMODEW *dm, FPDF_DOCUMENT doc, int pageIndex, const options *o) {
     FS_SIZEF sz;
     if (!FPDF_GetPageSizeByIndexF(doc, pageIndex, &sz)) return 0;
@@ -745,39 +696,19 @@ static int print_page(HDC hdc, DEVMODEW *dm, FPDF_DOCUMENT doc, int pageIndex, c
     int y = o->autocenter ? (prH - th) / 2 : 0;
 
     if (o->renderMode != RENDER_BITMAP) {
-        /* Vector path: PDFium renders directly into the printer DC (GDI), or
-           as PostScript passthrough when FPDF_SetPrintMode chose a PS mode. */
+        /* PostScript: PDFium renders into the printer DC, which emits PS via
+           the PASSTHROUGH escape (FPDF_SetPrintMode chose the PS level). */
         FPDF_PAGE vpage = FPDF_LoadPage(doc, pageIndex);
         if (!vpage) return 0;
-        int gdi = o->renderMode == RENDER_GDI;
-        if (gdi && !gdi_page_ok(vpage, 72.0 / (dpiX * s))) {
-            fwprintf(stderr, L"Warning: page %d is not plain text and vector; using /render=bitmap.\n",
-                     pageIndex + 1);
-            FPDF_ClosePage(vpage);
-            goto bitmap;
-        }
         int vok = 1;
         if (StartPage(hdc) <= 0) vok = 0;
-        if (vok && gdi) {
-            /* Fine grid: PDFium draws GDI_SUBDOTS times larger and the world
-               transform scales it back, so its rounding lands on sub-pixels.
-               The transform also places the page at (x, y). */
-            int oldMode = SetGraphicsMode(hdc, GM_ADVANCED);
-            XFORM xf = { 1.0f / GDI_SUBDOTS, 0.0f, 0.0f, 1.0f / GDI_SUBDOTS, (FLOAT)x, (FLOAT)y };
-            SetWorldTransform(hdc, &xf);
-            FPDF_RenderPage(hdc, vpage, 0, 0, tw * GDI_SUBDOTS, th * GDI_SUBDOTS,
-                            rotate, FPDF_PRINTING | FPDF_ANNOT);
-            ModifyWorldTransform(hdc, NULL, MWT_IDENTITY);
-            SetGraphicsMode(hdc, oldMode);
-        } else if (vok) {
+        if (vok) {
             FPDF_RenderPage(hdc, vpage, x, y, tw, th, rotate, FPDF_PRINTING | FPDF_ANNOT);
+            if (EndPage(hdc) <= 0) vok = 0;
         }
-        if (vok && EndPage(hdc) <= 0) vok = 0;
         FPDF_ClosePage(vpage);
         return vok;
     }
-
-bitmap:;
 
     size_t stride = (size_t)tw * 4;
     unsigned char *buf = (unsigned char*)malloc(stride * th);
@@ -879,16 +810,6 @@ static void print_file(HDC hdc, DEVMODEW *dm, const wchar_t *path, int index, co
     row->pagesSelected = pages.n;
 
     if (o->mock) {                              /* /mock: list only, no print */
-        if (o->renderMode == RENDER_GDI) {      /* which pages stay vector */
-            for (int i = 0; i < pages.n; i++) {
-                FPDF_PAGE pg = FPDF_LoadPage(doc, pages.a[i] - 1);
-                /* No printer DC here: judge hairlines at 600 dpi, 100%. */
-                int ok = pg && gdi_page_ok(pg, 72.0 / 600.0);
-                if (pg) FPDF_ClosePage(pg);
-                wprintf(L"  page %d: /render=gdi -> %s\n", pages.a[i],
-                        ok ? L"gdi" : L"bitmap (not plain text and vector)");
-            }
-        }
         if (tray_by_size_active(o)) {
             for (int i = 0; i < pages.n; i++) {
                 FS_SIZEF sz; int pidx;
@@ -1009,12 +930,11 @@ L"               [/scale=#|fit] [/shrink-to-fit] [/expand-to-fit]\n"
 L"               [/auto-rotate] [/auto-center] [/portrait] [/landscape]\n"
 L"               [/duplex|/duplex=short] [/simplex] [/tray=#] [/no-autotray]\n"
 L"               [/outfile=path] [/settings=profile.cfg] [/listtrays]\n"
-L"               [/render=bitmap|gdi|ps|ps42]\n\n"
-L"Rendering: bitmap (default) sends a full-page raster. gdi keeps text and\n"
-L"  line art as vectors (pages with images or transparency print as bitmap;\n"
-L"  /mock lists them). ps sends PostScript inside the driver's job (PS\n"
-L"  drivers only; falls back to gdi); ps42 also embeds TrueType fonts as\n"
-L"  Type 42. Queue defaults apply in all modes.\n\n"
+L"               [/render=bitmap|ps|ps42]\n\n"
+L"Rendering: bitmap (default) sends a full-page raster. ps sends PostScript\n"
+L"  inside the driver's job (PS drivers only; falls back to bitmap); ps42\n"
+L"  also sends embedded CID TrueType fonts as Type 42. Queue defaults apply\n"
+L"  in all modes.\n\n"
 L"Wildcards (* ?) and relative paths are OK. Multiple named files override a\n"
 L"wildcard. Default printer is used unless a printer name is given.\n\n"
 L"Page ranges: 3 | 2-4,6,8-9 | 8- | z-1 (reverse) | z-1:odd|even | r5-r2.\n\n"
@@ -1322,11 +1242,9 @@ L"inserts the PDF's file name, which is the name used by default.\r\n\r\n"
 L"Other options: /r recurses the current folder; /R# recurses # levels; /p:password opens an "
 L"encrypted PDF; /csv writes a list of files printed; /mock lists files without printing; "
 L"/s runs silently; /outfile=path prints to a file.\r\n\r\n"
-L"Rendering: /render=bitmap (the default) sends each page as a full-page image. /render=gdi "
-L"keeps text and line art as vectors; pages with images, transparency or hairlines print as "
-L"bitmap instead. /render=ps sends PostScript inside the driver's job "
-L"(PostScript drivers only; otherwise it falls back to gdi), and /render=ps42 also embeds "
-L"TrueType fonts as Type 42.\r\n\r\n"
+L"Rendering: /render=bitmap (the default) sends each page as a full-page image. /render=ps "
+L"sends PostScript inside the driver's job (PostScript drivers only; otherwise it falls back "
+L"to bitmap), and /render=ps42 also sends embedded CID TrueType fonts as Type 42.\r\n\r\n"
 L"Settings files: settings.cfg next to the program loads automatically; /settings=file.cfg "
 L"loads another. Each line is one option without the leading slash; lines starting with # or "
 L"; are comments.";
@@ -1474,19 +1392,16 @@ int wmain(int argc, wchar_t **argv) {
         }
         if (o.renderMode == RENDER_PS || o.renderMode == RENDER_PS42) {
             /* PostScript needs a PS driver that accepts the PASSTHROUGH escape.
-               If it doesn't (PCL, XPS/v4, IPP class driver), fall back to gdi. */
+               If it doesn't (PCL, XPS/v4, IPP class driver), fall back to bitmap. */
             int esc = PASSTHROUGH;
             if (ExtEscape(hdc, QUERYESCSUPPORT, sizeof(esc), (LPCSTR)&esc, 0, NULL) > 0) {
                 FPDF_SetPrintMode(o.renderMode == RENDER_PS42
                                   ? FPDF_PRINTMODE_POSTSCRIPT3_TYPE42_PASSTHROUGH
                                   : FPDF_PRINTMODE_POSTSCRIPT3_PASSTHROUGH);
             } else {
-                fwprintf(stderr, L"Warning: \"%s\" does not accept PostScript; using /render=gdi.\n", printerName);
-                o.renderMode = RENDER_GDI;
-                FPDF_SetPrintMode(FPDF_PRINTMODE_EMF);
+                fwprintf(stderr, L"Warning: \"%s\" does not accept PostScript; using /render=bitmap.\n", printerName);
+                o.renderMode = RENDER_BITMAP;
             }
-        } else if (o.renderMode == RENDER_GDI) {
-            FPDF_SetPrintMode(FPDF_PRINTMODE_EMF);
         }
     }
 

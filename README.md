@@ -56,7 +56,7 @@ PDFtoPrinter [path\]file.pdf [more.pdf ...] ["printer name"] [pages=...]
              [/auto-rotate] [/auto-center] [/portrait] [/landscape]
              [/duplex|/duplex=short] [/simplex] [/tray=#] [/autotray]
              [/outfile=path] [/settings=profile.cfg] [/listtrays]
-             [/render=bitmap|gdi|ps|ps42]
+             [/render=bitmap|ps|ps42]
 ```
 
 - Quote any path/filename containing spaces. Relative paths and `*`/`?`
@@ -71,11 +71,8 @@ PDFtoPrinter [path\]file.pdf [more.pdf ...] ["printer name"] [pages=...]
 - `/mock` lists what would print (and the per-page tray decisions) without
   printing. `/s` runs silently. `/outfile=path` prints to a file.
 - `/render=` picks how pages reach the printer. `bitmap` (default) sends each
-  page as a full-page image. `gdi` has PDFium draw to the printer directly, so
-  text and line art stay vector; pages with images, transparency, gradients or
-  hairlines print as `bitmap` instead, with a warning (`/mock /render=gdi`
-  lists which pages). `ps` sends PostScript level 3 inside the
-  driver's own job (PostScript drivers only; others fall back to `gdi`), and
+  page as a full-page image. `ps` sends PostScript level 3 inside the
+  driver's own job (PostScript drivers only; others fall back to `bitmap`), and
   `ps42` also embeds TrueType fonts as Type 42. Type 42 only applies to
   embedded CID TrueType fonts; `examples/ps42-test.pdf` is a test page made of
   them (built by `examples/make-ps42-test.py`).
