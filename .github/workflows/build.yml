@@ -9,7 +9,9 @@ name: Windows build
 # Runs on:
 #   - pushes to build/main, and non-draft pull requests
 #   - a "/run" comment on any pull request (drafts included), from someone with
-#     write access; the run replies on the PR with a link to the artifact
+#     write access; the run replies on the PR with a link to the artifact.
+#     Like PR builds, it builds the PR merged into its base branch, so a branch
+#     cut from main still gets this repo's build setup.
 #   - manually from the Actions tab (optionally for a given branch/tag/SHA)
 #
 # The /run trigger only works once this file is on the repo's default branch.
@@ -65,7 +67,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 0     # MinVer needs the history and tags
           ref: >-
-            ${{ github.event_name == 'issue_comment' && format('refs/pull/{0}/head', github.event.issue.number)
+            ${{ github.event_name == 'issue_comment' && format('refs/pull/{0}/merge', github.event.issue.number)
              || inputs.ref || '' }}
 
       - name: Version (MinVer)
@@ -96,7 +98,11 @@ jobs:
           Copy-Item PDFtoPrinterNative.exe, PDFtoPrinterSelect.exe, PDFtoPrinterSelectGUI.exe, pdfium.dll, README.md, LICENSE dist\
           Copy-Item -Recurse examples dist\examples
           Copy-Item pdfium\LICENSE dist\LICENSE.pdfium -ErrorAction SilentlyContinue
-          "version $env:VER_STRING`ncommit $(git rev-parse HEAD)`nPDFium $pdfium" | Set-Content dist\BUILDINFO.txt
+          $info = "version $env:VER_STRING`ncommit $(git rev-parse HEAD)"
+          # On a PR merge commit, also record the PR branch's own commit.
+          $prHead = git rev-parse --verify --quiet 'HEAD^2'
+          if ($prHead) { $info += "`nPR head $prHead" }
+          "$info`nPDFium $pdfium" | Set-Content dist\BUILDINFO.txt
           Get-ChildItem dist -Recurse | Format-Table Length, FullName
 
       - name: Upload artifact
